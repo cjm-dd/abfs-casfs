@@ -77,10 +77,24 @@ struct casfs_read_dir_args {
 	__u64 cookie; /* In/Out resume index */
 };
 
+/* One known digest: a blob's git hash and the SHA-256 of its content. */
+struct casfs_digest_entry {
+	__u8 sha[CASFS_HASH_LEN];
+	__u8 sha256[CASFS_SHA256_LEN];
+};
+
+struct casfs_add_digests_args {
+	__u64 entries_ptr; /* Array of struct casfs_digest_entry */
+	__u32 count;
+	__u32 processed; /* Output: entries consumed before any error */
+};
+
 #define CASFS_IOCTL_MAGIC 'C'
 #define CASFS_IOC_TAP_FINISHED _IO(CASFS_IOCTL_MAGIC, 1)
 #define CASFS_IOC_READ_DIR_ENTRIES \
 	_IOWR(CASFS_IOCTL_MAGIC, 2, struct casfs_read_dir_args)
+#define CASFS_IOC_ADD_DIGESTS \
+	_IOWR(CASFS_IOCTL_MAGIC, 3, struct casfs_add_digests_args)
 #define IOCTL_TAP_CMD_FINISHED CASFS_IOC_TAP_FINISHED
 #define CASFS_IOC_TAP_FINISHED_OLD _IO('T', 1)
 
@@ -99,6 +113,7 @@ struct casfs_read_dir_args {
 #define CAS_XATTR_STATUS "fs_status"
 #define CAS_XATTR_ARI_SIZE "ari_size"
 #define CAS_XATTR_BACKEND_STAT "backend_stat"
+#define CAS_XATTR_SHA256 "sha256"
 
 #define CAS_MAX_ARI_LEN 4096
 

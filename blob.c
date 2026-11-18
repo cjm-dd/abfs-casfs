@@ -301,7 +301,7 @@ int cas_blob_ensure_write(struct cas_blob *blob)
 
 int cas_blob_snapshot(struct cas_blob *blob, const loff_t exp_size,
 		      struct cas_hash *out_hash, loff_t *out_size,
-		      bool *updated)
+		      bool *updated, u8 *sha256, bool *have_sha256)
 {
 	struct cas_hash hash;
 	loff_t size = 0ull;
@@ -318,7 +318,7 @@ int cas_blob_snapshot(struct cas_blob *blob, const loff_t exp_size,
 	if (IS_ERR(snap_file))
 		return PTR_ERR(snap_file);
 
-	err = cas_hash_file(snap_file, &hash, &size, true);
+	err = cas_hash_file(snap_file, &hash, &size, true, sha256, have_sha256);
 	filp_close(snap_file, NULL);
 	if (unlikely(err))
 		return err;

@@ -57,7 +57,7 @@ static const struct kernel_param_ops param_ops_ro_string = {
 /*
  * Virtual/logical interface version implemented by CASFS for ABFS <-> CASFS compatibility.
  */
-static const char *casfs_implemented_interface_version = "1.5.0";
+static const char *casfs_implemented_interface_version = "1.6.0";
 module_param_cb(implemented_interface_version, &param_ops_ro_string,
 		&casfs_implemented_interface_version, 0444);
 MODULE_PARM_DESC(implemented_interface_version,
@@ -429,6 +429,10 @@ int cas_fill_super(struct super_block *sb, struct fs_context *fc)
 		goto out_destroy_root;
 	}
 
+	err = cas_digest_table_init(&fs->digests);
+	if (unlikely(err))
+		goto out_destroy_root;
+
 	err = cas_provider_start(&fs->provider);
 	if (unlikely(err))
 		goto out_destroy_root;
@@ -452,6 +456,7 @@ out_destroy_cache:
 	cas_cache_destroy(&fs->cache);
 	debugfs_remove_recursive(fs->debugfs_root);
 out_free_fs:
+	cas_digest_table_destroy(&fs->digests);
 	kfree(fs->cache_dir_str);
 	kfree(fs->cache_socket_str);
 	kfree(fs);
@@ -510,6 +515,7 @@ void cas_put_super(struct super_block *sb)
 
 	kmem_cache_destroy(fs->node_cache);
 	casfs_sysfs_unregister(&fs->sysfs);
+	cas_digest_table_destroy(&fs->digests);
 
 	ida_free(&casfs_instance_ida, fs->instance_ida);
 	atomic_inc(&casfs_mount_slots);

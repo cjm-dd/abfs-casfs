@@ -754,6 +754,10 @@ int cas_file_snapshot(struct cas_node *node)
 	struct inode *inode = CAS_TO_INODE(node);
 	struct cas_fs *fs = SB_TO_FS(inode->i_sb);
 	bool updated = false;
+	/* Only computed where the sha256 xattr is in use. */
+	bool want_sha256 = cas_digest_table_active(&fs->digests);
+	bool have_sha256 = false;
+	u8 sha256[CASFS_SHA256_LEN];
 
 	if (READ_ONCE(node->backend_type) == cas_type_ari)
 		return -EINVAL;
@@ -789,11 +793,14 @@ int cas_file_snapshot(struct cas_node *node)
 	}
 
 	err = cas_blob_snapshot(&node->blob, verified_size, &hash,
-				&verified_size, &updated);
+				&verified_size, &updated,
+				want_sha256 ? sha256 : NULL, &have_sha256);
 
 	if (unlikely(err) || !updated)
 		goto out_unlock;
 
+	if (have_sha256)
+		cas_digest_put(&fs->digests, &hash, sha256);
 	cas_file_set_hash(node, &hash, verified_size);
 	cas_provider_queue_new_object(&fs->provider, &hash, cas_type_blob);
 

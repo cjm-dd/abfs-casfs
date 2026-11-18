@@ -14,6 +14,7 @@
 #define MAX_HEADER_SIZE 32
 
 struct crypto_shash *cas_sha1_tfm;
+struct crypto_shash *cas_sha256_tfm;
 
 const char *cas_zero_hash_hex = "0000000000000000000000000000000000000000";
 const struct cas_hash cas_zero_hash = {
@@ -44,6 +45,14 @@ int cas_hash_init(void)
 		pr_err("casfs: failed to allocate sha1 tfm\n");
 		return PTR_ERR(cas_sha1_tfm);
 	}
+
+	/* Optional: without it the sha256 xattr only serves known digests. */
+	cas_sha256_tfm = crypto_alloc_shash("sha256", 0, 0);
+	if (IS_ERR(cas_sha256_tfm)) {
+		pr_warn("casfs: no sha256 tfm, snapshots will not compute SHA-256: %pe\n",
+			cas_sha256_tfm);
+		cas_sha256_tfm = NULL;
+	}
 	return 0;
 }
 
@@ -52,6 +61,10 @@ void cas_hash_exit(void)
 	if (cas_sha1_tfm) {
 		crypto_free_shash(cas_sha1_tfm);
 		cas_sha1_tfm = NULL;
+	}
+	if (cas_sha256_tfm) {
+		crypto_free_shash(cas_sha256_tfm);
+		cas_sha256_tfm = NULL;
 	}
 }
 
@@ -159,10 +172,22 @@ out:
 	return err;
 }
 
+bool cas_sha256_available(void)
+{
+	return cas_sha256_tfm != NULL;
+}
+
+/*
+ * Hashes the content of file as a git blob (is_blob) or raw bytes into h.
+ * If sha256 is non-NULL, also computes the SHA-256 of the raw content in the
+ * same pass, so the file is read once, and sets *have_sha256 when it did.
+ * SHA-256 is best effort and never fails the git hash.
+ */
 int cas_hash_file(struct file *file, struct cas_hash *h, loff_t *size,
-		  bool is_blob)
+		  bool is_blob, u8 *sha256, bool *have_sha256)
 {
 	SHASH_DESC_ON_STACK(desc, cas_sha1_tfm);
+	struct shash_desc *desc256 = NULL;
 	char header[MAX_HEADER_SIZE];
 	char *buf;
 	int hn, err;
@@ -182,6 +207,22 @@ int cas_hash_file(struct file *file, struct cas_hash *h, loff_t *size,
 	if (unlikely(err))
 		goto free_page;
 
+	if (have_sha256)
+		*have_sha256 = false;
+	if (sha256 && cas_sha256_tfm) {
+		/* Heap, not stack: this runs under xattr and VFS frames. */
+		desc256 = kmalloc(sizeof(*desc256) +
+					  crypto_shash_descsize(cas_sha256_tfm),
+				  GFP_KERNEL);
+		if (desc256) {
+			desc256->tfm = cas_sha256_tfm;
+			if (crypto_shash_init(desc256)) {
+				kfree(desc256);
+				desc256 = NULL;
+			}
+		}
+	}
+
 	if (is_blob) {
 		hn = snprintf(header, MAX_HEADER_SIZE, "blob %lld", len);
 		err = crypto_shash_update(desc, header, hn + 1);
@@ -199,14 +240,26 @@ int cas_hash_file(struct file *file, struct cas_hash *h, loff_t *size,
 		err = crypto_shash_update(desc, buf, n);
 		if (err)
 			goto out;
+		if (desc256 && crypto_shash_update(desc256, buf, n)) {
+			shash_desc_zero(desc256);
+			kfree(desc256);
+			desc256 = NULL;
+		}
 	}
 
 	err = crypto_shash_final(desc, h->bytes);
-	if (likely(!err))
+	if (likely(!err)) {
 		*size = len;
+		if (desc256 && have_sha256)
+			*have_sha256 = !crypto_shash_final(desc256, sha256);
+	}
 
 out:
 	shash_desc_zero(desc);
+	if (desc256) {
+		shash_desc_zero(desc256);
+		kfree(desc256);
+	}
 free_page:
 	free_page((unsigned long)buf);
 	return err;

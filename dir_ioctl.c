@@ -7,15 +7,84 @@
 #include <linux/compat.h>
 #include <linux/limits.h>
 #include <linux/string.h>
+#include <linux/slab.h>
+#include <linux/sched/signal.h>
 
 #include "casfs.h"
 #include "node.h"
 #include "dir_rb_tree.h"
 #include "compat_inode.h"
+#include "fs.h"
 
 /* Max record size: header + NAME_MAX + 1 + CAS_MAX_ARI_LEN + 1 */
 #define CASFS_MAX_RECORD_SIZE \
 	(sizeof(struct casfs_dir_entry) + NAME_MAX + 1 + 4096 + 1)
+
+#define CASFS_ADD_DIGESTS_MAX (1u << 24)
+#define CASFS_ADD_DIGESTS_CHUNK 256u
+
+/*
+ * Loads known digests into the mount's table for the sha256 xattr. Writing
+ * to the directory is required, so only the mount's owner can vouch for
+ * digests; a wrong one affects only builds reading this mount.
+ */
+static long cas_ioctl_add_digests(struct file *file, void __user *uarg)
+{
+	struct inode *inode = file_inode(file);
+	struct cas_fs *fs = SB_TO_FS(inode->i_sb);
+	struct casfs_add_digests_args args;
+	const struct casfs_digest_entry __user *src;
+	struct casfs_digest_entry *chunk;
+	struct cas_hash hash;
+	u32 done = 0, n, i;
+	long ret;
+
+	ret = casfs_file_permission(file, inode, MAY_WRITE);
+	if (ret)
+		return ret;
+
+	if (copy_from_user(&args, uarg, sizeof(args)))
+		return -EFAULT;
+	if (args.count > CASFS_ADD_DIGESTS_MAX ||
+	    (args.count && !args.entries_ptr))
+		return -EINVAL;
+
+	chunk = kmalloc_array(CASFS_ADD_DIGESTS_CHUNK, sizeof(*chunk),
+			      GFP_KERNEL);
+	if (!chunk)
+		return -ENOMEM;
+
+	cas_digest_table_activate(&fs->digests);
+	src = u64_to_user_ptr(args.entries_ptr);
+	while (done < args.count) {
+		n = min(CASFS_ADD_DIGESTS_CHUNK, args.count - done);
+		if (copy_from_user(chunk, src + done, n * sizeof(*chunk))) {
+			ret = -EFAULT;
+			break;
+		}
+		for (i = 0; i < n; i++) {
+			memcpy(hash.bytes, chunk[i].sha, CASFS_HASH_LEN);
+			ret = cas_digest_put(&fs->digests, &hash,
+					     chunk[i].sha256);
+			if (ret)
+				break;
+		}
+		done += i;
+		if (ret)
+			break;
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
+		cond_resched();
+	}
+
+	kfree(chunk);
+	args.processed = done;
+	if (copy_to_user(uarg, &args, sizeof(args)) && !ret)
+		ret = -EFAULT;
+	return ret;
+}
 
 long cas_dir_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
@@ -31,6 +100,8 @@ long cas_dir_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	u64 current_idx = 0;
 	int ret = 0;
 
+	if (cmd == CASFS_IOC_ADD_DIGESTS)
+		return cas_ioctl_add_digests(file, uarg);
 	if (cmd != CASFS_IOC_READ_DIR_ENTRIES)
 		return -ENOTTY;
 

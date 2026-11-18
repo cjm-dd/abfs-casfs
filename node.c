@@ -7,6 +7,7 @@
 #include <linux/xattr.h>
 #include <linux/namei.h>
 #include <linux/parser.h>
+#include <linux/kernel.h> /* hex2bin */
 #include "compat.h"
 #include "compat_inode.h"
 #include "blob.h"
@@ -388,6 +389,74 @@ static int cas_xattr_get_backend_stat(struct dentry *dentry,
 		return -ERANGE;
 
 	return len;
+}
+
+/* SHA-256 of zero bytes. */
+static const u8 cas_empty_sha256[CASFS_SHA256_LEN] = {
+	0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4,
+	0xc8, 0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b,
+	0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+};
+
+/* An RBE ARI reads "rbe:<sha256 hex>:<size>"; the digest is the content's. */
+static bool cas_ari_sha256(struct cas_node *node, u8 *sha256)
+{
+	struct inode *inode = CAS_TO_INODE(node);
+	const char *hex;
+	bool ok = false;
+
+	cas_lock_node(inode);
+	if (node->ari && !strncmp(node->ari, "rbe:", 4)) {
+		hex = node->ari + 4;
+		ok = strnlen(hex, 2 * CASFS_SHA256_LEN + 1) >
+			     2 * CASFS_SHA256_LEN &&
+		     hex[2 * CASFS_SHA256_LEN] == ':' &&
+		     !hex2bin(sha256, hex, CASFS_SHA256_LEN);
+	}
+	cas_unlock_node(inode);
+	return ok;
+}
+
+/*
+ * The SHA-256 of a regular file's content, as raw bytes, for build tools
+ * that read digests from an xattr (Bazel's --unix_digest_hash_attribute_name).
+ * It comes from the file's ARI, the mount's digest table, or a snapshot of a
+ * modified file, which computes it alongside the git hash. Anything else is
+ * -ENODATA, so the caller hashes the file itself; this never fails a read.
+ */
+static int cas_xattr_get_sha256(struct cas_node *node, void *buf, size_t size)
+{
+	struct cas_fs *fs = SB_TO_FS(CAS_TO_INODE(node)->i_sb);
+	u8 sha256[CASFS_SHA256_LEN];
+	struct cas_hash hash;
+	uint64_t hash_size;
+
+	if (!cas_type_is_reg_file(node->type))
+		return -ENODATA;
+	if (size && size < CASFS_SHA256_LEN)
+		return -ERANGE;
+
+	cas_digest_table_activate(&fs->digests);
+
+	if (READ_ONCE(node->backend_type) == cas_type_ari) {
+		if (!cas_ari_sha256(node, sha256))
+			return -ENODATA;
+	} else {
+		if (cas_file_snapshot(node))
+			return -ENODATA;
+		cas_get_node_hash(node, &hash, &hash_size);
+		if (!cas_hash_cmp(&hash, &cas_empty_file_hash))
+			memcpy(sha256, cas_empty_sha256, CASFS_SHA256_LEN);
+		else if (!cas_digest_get(&fs->digests, &hash, sha256))
+			return -ENODATA;
+	}
+	/* Modified since: the digest would describe the old content. */
+	if (cas_node_is_dirty(node))
+		return -ENODATA;
+
+	if (size)
+		memcpy(buf, sha256, CASFS_SHA256_LEN);
+	return CASFS_SHA256_LEN;
 }
 
 static int cas_xattr_get_hash(struct dentry *dentry, struct cas_node *node,
@@ -844,6 +913,10 @@ int cas_xattr_get(const struct xattr_handler *handler, struct dentry *dentry,
 
 	if (node->type == CAS_TYPE_CTRL)
 		return -EOPNOTSUPP;
+
+	/* First: build tools read this for every input file. */
+	if (!strcmp(name, CAS_XATTR_SHA256))
+		return cas_xattr_get_sha256(node, buffer, size);
 
 	if (!strcmp(name, CAS_XATTR_HASH))
 		return cas_xattr_get_hash(dentry, node, name, buffer, size);

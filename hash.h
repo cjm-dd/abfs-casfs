@@ -44,7 +44,8 @@ extern void cas_hash_fill_hex(const struct cas_hash *h, char *buf);
 
 extern int cas_hash_bytes(const void *buf, ssize_t len, struct cas_hash *h);
 extern int cas_hash_blob(const void *buf, ssize_t len, struct cas_hash *h);
+extern bool cas_sha256_available(void);
 extern int cas_hash_file(struct file *file, struct cas_hash *h, loff_t *size,
-			 bool is_blob);
+			 bool is_blob, u8 *sha256, bool *have_sha256);
 
 #endif // _CASFS_HASH_H_

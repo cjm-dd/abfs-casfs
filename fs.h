@@ -15,6 +15,7 @@
 #include "provider.h"
 #include "cas_ctrl.h"
 #include "sysfs.h"
+#include "digest.h"
 
 #define XATTR_CASFS_PREFIX "casfs."
 #define XATTR_USER_CASFS_PREFIX "user.casfs_"
@@ -58,6 +59,7 @@ struct cas_fs {
 	int instance_ida;
 	struct kmem_cache *node_cache;
 	char cache_name[32];
+	struct cas_digest_table digests;
 };
 
 static inline int cas_fs_check(struct cas_fs *fs)

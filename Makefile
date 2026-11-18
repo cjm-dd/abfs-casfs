@@ -43,6 +43,7 @@ root_objs := \
 	cas_zlib.o \
 	dir.o \
 	dir_ioctl.o \
+	digest.o \
 	tree.o \
 	deeptree.o \
 	fstream.o \

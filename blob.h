@@ -29,7 +29,7 @@ extern void cas_blob_reset(struct cas_blob *blob);
 
 extern int cas_blob_snapshot(struct cas_blob *blob, const loff_t exp_size,
 			     struct cas_hash *hash, loff_t *size,
-			     bool *updated);
+			     bool *updated, u8 *sha256, bool *have_sha256);
 
 extern int cas_blob_ensure_read(struct cas_blob *blob);
 extern int cas_blob_ensure_write(struct cas_blob *blob);
